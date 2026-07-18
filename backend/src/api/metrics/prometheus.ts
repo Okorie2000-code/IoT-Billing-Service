@@ -485,6 +485,127 @@ export function setSseQueueDepth(clientId: string, depth: number): void {
   sseQueueDepth.set({ client_id: clientId }, depth);
 }
 
+// --- Multi-region replication metrics (issue #88) ----------------------------
+// Tracks replication lag, region availability, failover state, and recovery
+// success so existing Prometheus/Grafana dashboards can observe DR activity.
+
+/**
+ * Current replication lag in milliseconds between primary and each replica.
+ * Label `source_region` is the primary; `target_region` is the replica.
+ * A value of -1 indicates the replica is unreachable.
+ */
+export const replicationLagMs: promClient.Gauge = new promClient.Gauge({
+  name: 'replication_lag_ms',
+  help: 'Replication lag in ms between primary and replica region (-1 = unreachable)',
+  labelNames: ['source_region', 'target_region'],
+});
+
+/**
+ * Region availability (1 = healthy, 0 = degraded, -1 = unavailable).
+ */
+export const regionAvailability: promClient.Gauge = new promClient.Gauge({
+  name: 'region_availability',
+  help: 'Region availability: 1=healthy, 0=degraded, -1=unavailable',
+  labelNames: ['region'],
+});
+
+/**
+ * Failover state: 1 if this instance is currently acting as primary, 0 if secondary.
+ * Transitions increment `replication_failover_events_total`.
+ */
+export const replicationIsPrimary: promClient.Gauge = new promClient.Gauge({
+  name: 'replication_is_primary',
+  help: '1 if this instance is currently the primary region, 0 if secondary/standby',
+  labelNames: ['region'],
+});
+
+/**
+ * Total number of failover events (planned or emergency) triggered.
+ */
+export const replicationFailoverEventsTotal: promClient.Counter = new promClient.Counter({
+  name: 'replication_failover_events_total',
+  help: 'Total failover events triggered, by type (planned | emergency) and direction',
+  labelNames: ['type', 'from_region', 'to_region'],
+});
+
+/**
+ * Total number of successful recovery verifications after failover.
+ */
+export const replicationRecoverySuccessTotal: promClient.Counter = new promClient.Counter({
+  name: 'replication_recovery_success_total',
+  help: 'Successful DR recovery verifications after a failover event',
+  labelNames: ['region'],
+});
+
+/**
+ * Total number of failed recovery verifications after failover.
+ */
+export const replicationRecoveryFailureTotal: promClient.Counter = new promClient.Counter({
+  name: 'replication_recovery_failure_total',
+  help: 'Failed DR recovery verifications after a failover event',
+  labelNames: ['region', 'reason'],
+});
+
+/**
+ * Total number of billing transactions replicated to secondary regions.
+ * Used to verify no data loss after failover.
+ */
+export const replicatedBillingTransactionsTotal: promClient.Counter = new promClient.Counter({
+  name: 'replicated_billing_transactions_total',
+  help: 'Billing transactions replicated to secondary regions',
+  labelNames: ['source_region', 'target_region', 'status'],
+});
+
+// Setters --------------------------------------------------------------------
+
+export function setReplicationLagMs(
+  sourceRegion: string,
+  targetRegion: string,
+  lagMs: number,
+): void {
+  replicationLagMs.set({ source_region: sourceRegion, target_region: targetRegion }, lagMs);
+}
+
+export function setRegionAvailability(
+  region: string,
+  status: 'healthy' | 'degraded' | 'unavailable',
+): void {
+  const val = status === 'healthy' ? 1 : status === 'degraded' ? 0 : -1;
+  regionAvailability.set({ region }, val);
+}
+
+export function setReplicationIsPrimary(region: string, isPrimary: boolean): void {
+  replicationIsPrimary.set({ region }, isPrimary ? 1 : 0);
+}
+
+export function recordFailoverEvent(
+  type: 'planned' | 'emergency',
+  fromRegion: string,
+  toRegion: string,
+): void {
+  replicationFailoverEventsTotal.inc({ type, from_region: fromRegion, to_region: toRegion });
+}
+
+export function recordRecoverySuccess(region: string): void {
+  replicationRecoverySuccessTotal.inc({ region });
+}
+
+export function recordRecoveryFailure(region: string, reason: string): void {
+  replicationRecoveryFailureTotal.inc({ region, reason });
+}
+
+export function recordReplicatedTransaction(
+  sourceRegion: string,
+  targetRegion: string,
+  status: 'ok' | 'failed',
+): void {
+  replicatedBillingTransactionsTotal.inc({
+    source_region: sourceRegion,
+    target_region: targetRegion,
+    status,
+  });
+}
+
 // Metrics endpoint -------------------------------------------------------------
 
 export function getMetricsRegistry(): promClient.Registry {
